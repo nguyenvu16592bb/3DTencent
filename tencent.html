@@ -402,22 +402,85 @@ function distToSegment3(p, a, b) {
   var dx = apx - abx * t, dy = apy - aby * t, dz = apz - abz * t;
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
+// Bình phương khoảng cách điểm–đoạn (để xếp hạng, không sqrt từng đoạn).
+function distToSegmentSq3(p, a, b) {
+  var abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+  var apx = p[0] - a[0], apy = p[1] - a[1], apz = p[2] - a[2];
+  var len2 = abx * abx + aby * aby + abz * abz;
+  var t = len2 ? (apx * abx + apy * aby + apz * abz) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  var dx = apx - abx * t, dy = apy - aby * t, dz = apz - abz * t;
+  return dx * dx + dy * dy + dz * dz;
+}
 // Skin weights theo khoảng cách tới đoạn xương gần nhất (2 xương gần nhất,
 // chuẩn hoá tổng = 1.0). verts: [[x,y,z]...]; segments: [{bone, a:[x,y,z], b:[x,y,z]}].
+// Xếp hạng bằng khoảng cách bình phương (đơn điệu, thứ tự không đổi), chỉ sqrt
+// 2 đoạn gần nhất — cùng kết quả với bản dùng distToSegment3 nhưng nhanh hơn
+// nhiều khi skin toàn bộ mesh (150.000 đỉnh × 27 đoạn).
 function computeSkinWeights(verts, segments) {
   var out = [];
-  verts.forEach(function (p) {
+  for (var i = 0; i < verts.length; i++) {
+    var p = verts[i];
     var d1 = Infinity, d2 = Infinity, b1 = null, b2 = null;
-    segments.forEach(function (s) {
-      var d = distToSegment3(p, s.a, s.b);
-      if (d < d1) { d2 = d1; b2 = b1; d1 = d; b1 = s.bone; }
-      else if (d < d2) { d2 = d; b2 = s.bone; }
-    });
-    if (!b2) { out.push([{ bone: b1, w: 1 }]); return; }
-    var w1 = 1 / (d1 + 0.001), w2 = 1 / (d2 + 0.001), sum = w1 + w2;
+    for (var s = 0; s < segments.length; s++) {
+      var sg = segments[s];
+      var d = distToSegmentSq3(p, sg.a, sg.b);
+      if (d < d1) { d2 = d1; b2 = b1; d1 = d; b1 = sg.bone; }
+      else if (d < d2) { d2 = d; b2 = sg.bone; }
+    }
+    if (!b2) { out.push([{ bone: b1, w: 1 }]); continue; }
+    var dd1 = Math.sqrt(d1), dd2 = Math.sqrt(d2);
+    var w1 = 1 / (dd1 + 0.001), w2 = 1 / (dd2 + 0.001), sum = w1 + w2;
     out.push([{ bone: b1, w: w1 / sum }, { bone: b2, w: w2 / sum }]);
-  });
+  }
   return out;
+}
+// Skin 1 mesh rigid thành THREE.SkinnedMesh (giữ nguyên geometry local +
+// transform của mesh gốc; weights tính từ vị trí world của từng đỉnh).
+// segs: [{bone, index, a:[x,y,z], b:[x,y,z]}] (world); boneList: mảng xương
+// theo đúng thứ tự dùng cho THREE.Skeleton. Trả {skinned, verts, bad,
+// usedBones} hoặc null (mesh không có position).
+function skinOneMesh(mesh, segs, boneList) {
+  var geo = mesh.geometry.clone();
+  var pos = geo.attributes.position;
+  if (!pos) return null;
+  mesh.updateMatrixWorld(true);
+  var m = mesh.matrixWorld;
+  var n = pos.count;
+  var verts = [];
+  var v = new THREE.Vector3();
+  for (var i = 0; i < n; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(m);
+    verts.push([v.x, v.y, v.z]);
+  }
+  var res = computeSkinWeights(verts, segs);
+  var byName = {};
+  boneList.forEach(function (b, bi) { byName[b.name] = bi; });
+  var idx = new Uint16Array(n * 4), w = new Float32Array(n * 4);
+  var bad = 0, used = {};
+  for (var j = 0; j < n; j++) {
+    var ws = res[j], s = 0;
+    for (var k = 0; k < ws.length && k < 4; k++) {
+      var bi = byName[ws[k].bone];
+      if (bi == null) continue;
+      idx[j * 4 + k] = bi;
+      w[j * 4 + k] = ws[k].w;
+      used[bi] = 1;
+      s += ws[k].w;
+    }
+    if (Math.abs(s - 1) > 0.001) bad++;
+  }
+  geo.setAttribute('skinIndex', new THREE.BufferAttribute(idx, 4));
+  geo.setAttribute('skinWeight', new THREE.BufferAttribute(w, 4));
+  geo.computeBoundingSphere();
+  var material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  var skinned = new THREE.SkinnedMesh(geo, material);
+  skinned.name = mesh.name;
+  skinned.position.copy(mesh.position);
+  skinned.rotation.copy(mesh.rotation);
+  skinned.scale.copy(mesh.scale);
+  skinned.castShadow = mesh.castShadow;
+  return { skinned: skinned, verts: n, bad: bad, usedBones: Object.keys(used).map(function (k) { return parseInt(k, 10); }) };
 }
 </script>
 <script>
@@ -543,6 +606,269 @@ function buildHY3DSkeleton(scaleFactor) {
   orientHandBone(bonesMap.RightHand, [-1, 0, 0], 9.2);
   return { rootBone: rootBone, bones: bonesMap };
 }
+// ---- Fit skeleton mẫu theo landmark đo thật từ mesh ----
+// NGUYÊN NHÂN LỖI "rig không liền với nhân vật, cao hơn 1 tí":
+// skeleton mẫu dựng từ BONE_POS cố định = tỉ lệ của bonechar (chibi siêu
+// biến dạng: đầu ~1/3 chiều cao, thân ngắn, tay ở 0.53H, hông 0.34H).
+// NonLa gần tỉ lệ người thật (đầu ~13%, tay 0.42H, vai 0.43H, đầu 0.88H).
+// Scale đều theo chiều cao (sf) không sửa được tỉ lệ → tay skeleton cao
+// hơn tay mesh 17cm, đầu skeleton thấp hơn đầu mesh 45cm, chân lơ lửng
+// 9cm trên đất. Hai hàm dưới đo landmark thật từ mesh (tay/vai/đầu/hông/
+// chân) rồi kéo từng chuỗi xương về đúng vị trí đó, giữ tỉ lệ đoạn xương
+// trong mỗi chuỗi theo mẫu. Chạy sau buildHY3DSkeleton, TRƯỚC khi tính
+// segment cho skin weights (skin phải theo skeleton đã fit).
+// Trả về {ok:true, ...} hoặc {ok:false, reason} (giữ skeleton mẫu).
+function measureMeshLandmarks(mesh) {
+  var pos = mesh.geometry && mesh.geometry.attributes && mesh.geometry.attributes.position;
+  if (!pos || pos.count < 100) return null;
+  mesh.updateWorldMatrix(true, false);
+  var m = mesh.matrixWorld.elements;
+  var arr = pos.array, n = pos.count;
+  var i, lx, ly, lz, wx, wy, wz;
+  var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
+  for (i = 0; i < n; i++) {
+    lx = arr[i * 3]; ly = arr[i * 3 + 1]; lz = arr[i * 3 + 2];
+    wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+    wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+    wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+    if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+    if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+    if (wz < minZ) minZ = wz; if (wz > maxZ) maxZ = wz;
+  }
+  var H = maxY - minY;
+  if (H <= 0.01) return null;
+  // Trục tay = trục ngang rộng hơn (X hoặc Z). NonLa: X (span 1.08 > 0.84).
+  var armAxis = (maxX - minX) >= (maxZ - minZ) ? 'x' : 'z';
+  // Pass 2: tay (40 đỉnh xa nhất mỗi bên theo trục tay), lát y 1cm (span
+  // theo trục tay), chân (đỉnh y thấp).
+  var handL = [], handR = [];
+  function pushHand(list, p, ax) {
+    var k = 0;
+    while (k < list.length && list[k].ax >= ax) k++;
+    if (k < 40) { list.splice(k, 0, { ax: ax, x: p[0], y: p[1], z: p[2] }); if (list.length > 40) list.length = 40; }
+  }
+  var slices = {}; // bin 1cm -> {mn, mx} theo trục tay
+  var footL = { s: 0, n: 0 }, footR = { s: 0, n: 0 };
+  for (i = 0; i < n; i++) {
+    lx = arr[i * 3]; ly = arr[i * 3 + 1]; lz = arr[i * 3 + 2];
+    wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+    wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+    wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+    var a = armAxis === 'x' ? wx : wz;
+    if (a > 0) pushHand(handL, [wx, wy, wz], a); else pushHand(handR, [wx, wy, wz], -a);
+    var bin = Math.floor((wy - minY) * 100);
+    var sl = slices[bin] || (slices[bin] = { mn: 1e9, mx: -1e9 });
+    if (a < sl.mn) sl.mn = a; if (a > sl.mx) sl.mx = a;
+    if (wy < minY + 0.06 * H) { if (a > 0) { footL.s += a; footL.n++; } else { footR.s += -a; footR.n++; } }
+  }
+  function centroid(list) {
+    var s = { x: 0, y: 0, z: 0, ax: 0 };
+    list.forEach(function (q) { s.x += q.x; s.y += q.y; s.z += q.z; s.ax += q.ax; });
+    var c = list.length || 1;
+    return { x: s.x / c, y: s.y / c, z: s.z / c, ax: s.ax / c, n: list.length };
+  }
+  var hL = centroid(handL), hR = centroid(handR);
+  if (hL.n < 10 || hR.n < 10) return null;
+  var handAx = (hL.ax + hR.ax) / 2;
+  if (handAx < 0.15 * H) return null; // tay không vươn ra đủ xa — không phải humanoid T/A-pose
+  var handY = (hL.y + hR.y) / 2;
+  var handPerp = (armAxis === 'x' ? (hL.z + hR.z) : (hL.x + hR.x)) / 2;
+  // Điểm fit cánh tay: |trục| > 55% tay, gần mặt phẳng tay, y quanh tay.
+  var armPts = [];
+  for (i = 0; i < n; i++) {
+    lx = arr[i * 3]; ly = arr[i * 3 + 1]; lz = arr[i * 3 + 2];
+    wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+    wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+    wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+    var a2 = armAxis === 'x' ? wx : wz;
+    var p2 = armAxis === 'x' ? wz : wx;
+    if (Math.abs(a2) > 0.55 * handAx && Math.abs(p2 - handPerp) < 0.10 * H && wy > handY - 0.06 * H && wy < handY + 0.12 * H) {
+      armPts.push([Math.abs(a2), wy]);
+    }
+  }
+  var fitOK = false, slope = 0, inter = handY;
+  if (armPts.length >= 50) {
+    var nn = armPts.length, sx = 0, sy = 0, sxx = 0, sxy = 0, q;
+    for (q = 0; q < nn; q++) { sx += armPts[q][0]; sy += armPts[q][1]; sxx += armPts[q][0] * armPts[q][0]; sxy += armPts[q][0] * armPts[q][1]; }
+    var den = nn * sxx - sx * sx;
+    if (Math.abs(den) > 1e-9) {
+      slope = (nn * sxy - sx * sy) / den; inter = (sy - slope * sx) / nn;
+      if (Math.abs(slope) < 0.6) fitOK = true;
+    }
+  }
+  // Đỉnh đầu: lát 1cm cao nhất có span > 12% H (loại chóp nón lá hẹp).
+  var headTopY = maxY;
+  var topBin = Math.floor(H * 100);
+  for (var b = topBin; b >= 0; b--) {
+    var s2 = slices[b];
+    if (s2 && (s2.mx - s2.mn) > 0.12 * H) { headTopY = minY + (b + 1) / 100; break; }
+  }
+  var headCenterY = headTopY - 0.065 * H;
+  // Vai: giao đường tay với |trục| = 0.5 × nửa rộng thân ở ngực.
+  var shoulderY0 = fitOK ? slope * (0.45 * handAx) + inter : handY + 0.02 * H;
+  var chestY = (shoulderY0 + headCenterY) / 2;
+  var chestBin = slices[Math.floor((chestY - minY) * 100)];
+  var torsoHalf = (chestBin && chestBin.mx > chestBin.mn) ? (chestBin.mx - chestBin.mn) / 2 : 0.25 * H;
+  // Fit lại đường tay chỉ với điểm NGOÀI thân (|trục| > torsoHalf + 5% H):
+  // điểm gần thân bị đỉnh thân/áo lẫn vào, kéo đường dốc quá (vai tính ra
+  // 0.73 khi dùng cả điểm trong thân; chỉ dùng điểm ngoài thân → 0.71,
+  // khớp bản đồ 2D: cánh tay trong chúc lên tới vai ~0.70–0.72, cẳng tay
+  // ngoài gần ngang 0.64 — khuỷu tay cong ~20°, không phải đường thẳng).
+  // Ngưỡng theo % chiều cao (không phải 8cm tuyệt đối) để cùng 1 nhân vật
+  // cho cùng kết quả dù mesh ở không gian raw 1.13m hay normalize 1.53m.
+  if (fitOK) {
+    var outer = [];
+    for (var q4 = 0; q4 < armPts.length; q4++) {
+      if (armPts[q4][0] > torsoHalf + 0.05 * H) outer.push(armPts[q4]);
+    }
+    if (outer.length >= 50) {
+      var n4 = outer.length, sx4 = 0, sy4 = 0, sxx4 = 0, sxy4 = 0;
+      for (var q5 = 0; q5 < n4; q5++) { sx4 += outer[q5][0]; sy4 += outer[q5][1]; sxx4 += outer[q5][0] * outer[q5][0]; sxy4 += outer[q5][0] * outer[q5][1]; }
+      var den4 = n4 * sxx4 - sx4 * sx4;
+      if (Math.abs(den4) > 1e-9) {
+        var slope4 = (n4 * sxy4 - sx4 * sy4) / den4, inter4 = (sy4 - slope4 * sx4) / n4;
+        if (Math.abs(slope4) < 0.6) { slope = slope4; inter = inter4; }
+      }
+    }
+  }
+  var shoulderX = 0.5 * torsoHalf;
+  var shoulderY = fitOK ? slope * shoulderX + inter : handY + 0.02 * H;
+  // Hông: áo choàng che nên không đo trực tiếp được — lấy theo tỉ lệ
+  // Hips/Shoulder của mẫu (0.5206/0.8147 = 0.639). Hông nằm trong áo nên
+  // sai số này không nhìn thấy được; chân + thân mới là phần nhìn thấy.
+  var hipY = minY + 0.639 * (shoulderY - minY);
+  var ankleY = minY + 0.05 * H;
+  var footAx = ((footL.n ? footL.s / footL.n : 0.06 * H) + (footR.n ? footR.s / footR.n : 0.06 * H)) / 2;
+  // Pass 3: tâm đầu (đỉnh y > headTopY - 10% H) = trục giữa thân (đầu đối
+  // xứng nên tâm đầu là tâm thân, không bị gậy sau lưng làm lệch).
+  var hx = 0, hp = 0, hn = 0;
+  for (i = 0; i < n; i++) {
+    lx = arr[i * 3]; ly = arr[i * 3 + 1]; lz = arr[i * 3 + 2];
+    wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+    wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+    wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+    if (wy > headTopY - 0.10 * H) {
+      hx += (armAxis === 'x' ? wx : wz);
+      hp += (armAxis === 'x' ? wz : wx);
+      hn++;
+    }
+  }
+  var spineAx = hn ? hx / hn : (minX + maxX) / 2;
+  var spinePerp = hn ? hp / hn : 0;
+  return {
+    ok: true, H: H, minY: minY, maxY: maxY, armAxis: armAxis,
+    handL: hL, handR: hR, handAx: handAx, handY: handY, handPerp: handPerp,
+    shoulderX: shoulderX, shoulderY: shoulderY, fitArm: fitOK, armSlope: slope,
+    headTopY: headTopY, headCenterY: headCenterY, hipY: hipY, ankleY: ankleY,
+    footAx: footAx, spineAx: spineAx, spinePerp: spinePerp
+  };
+}
+function fitSkeletonToMesh(mesh, built) {
+  var lm = measureMeshLandmarks(mesh);
+  if (!lm) return { ok: false, reason: 'không đo được landmark từ mesh (mesh rỗng / tay không vươn ra — không phải humanoid T/A-pose)' };
+  var bones = built.bones;
+  var need = ['root', 'Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head', 'Head_end',
+    'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'LeftHand_end',
+    'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'RightHand_end',
+    'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'LeftToeBase', 'LeftToeBase_end',
+    'RightUpLeg', 'RightLeg', 'RightFoot', 'RightToeBase', 'RightToeBase_end'];
+  for (var i = 0; i < need.length; i++) if (!bones[need[i]]) return { ok: false, reason: 'thiếu xương ' + need[i] };
+  var P = BONE_POS;
+  function segLen(name, idx, fb) {
+    var p = P[name];
+    return (p && Math.abs(p[idx]) > 1e-6) ? Math.abs(p[idx]) : fb;
+  }
+  // Đặt 1 khớp theo target world: local = target - world của cha.
+  var W = {};
+  var parentOf = {};
+  HY3D_RIG.forEach(function (r) { parentOf[r.name] = r.parent; });
+  var rootParentW = new THREE.Vector3();
+  if (built.rootBone.parent) built.rootBone.parent.getWorldPosition(rootParentW);
+  function v3(ax, y, perp) {
+    // ax: tọa độ theo trục tay, perp: tọa độ theo trục ngang còn lại.
+    return lm.armAxis === 'x' ? new THREE.Vector3(ax, y, perp) : new THREE.Vector3(perp, y, ax);
+  }
+  function place(name, target) {
+    var b = bones[name];
+    var p = parentOf[name];
+    var pw = p ? W[p] : rootParentW;
+    b.position.set(target.x - pw.x, target.y - pw.y, target.z - pw.z);
+    W[name] = target.clone();
+  }
+  var minY = lm.minY, H = lm.H;
+  // --- Thân: root → Hips → cột sống → đầu (thẳng đứng) ---
+  place('root', v3(lm.spineAx, minY, lm.spinePerp));
+  place('Hips', v3(lm.spineAx, lm.hipY, lm.spinePerp));
+  var spineTotal = lm.headCenterY - lm.hipY;
+  var spineTpl = segLen('Spine', 1, 0.0719) + segLen('Spine1', 1, 0.0740) + segLen('Spine2', 1, 0.0882) + segLen('Neck', 1, 0.1015) + segLen('Head', 1, 0.0616);
+  var spineScale = spineTpl > 0 ? spineTotal / spineTpl : 1;
+  var y = lm.hipY;
+  y += segLen('Spine', 1, 0.0719) * spineScale; place('Spine', v3(lm.spineAx, y, lm.spinePerp));
+  y += segLen('Spine1', 1, 0.0740) * spineScale; place('Spine1', v3(lm.spineAx, y, lm.spinePerp));
+  y += segLen('Spine2', 1, 0.0882) * spineScale; place('Spine2', v3(lm.spineAx, y, lm.spinePerp));
+  y += segLen('Neck', 1, 0.1015) * spineScale; place('Neck', v3(lm.spineAx, y, lm.spinePerp));
+  y += segLen('Head', 1, 0.0616) * spineScale; place('Head', v3(lm.spineAx, y, lm.spinePerp));
+  place('Head_end', v3(lm.spineAx, lm.headTopY, lm.spinePerp));
+  // --- Tay: vai → khuỷu → cổ tay → bàn tay (thẳng theo đường vai–tay đo thật) ---
+  var fwdSign = (lm.handPerp >= lm.spinePerp) ? 1 : -1;
+  var armInfo = {};
+  [['Left', 1], ['Right', -1]].forEach(function (sd) {
+    var s = sd[0], sign = sd[1];
+    var hand = (s === 'Left') ? lm.handL : lm.handR;
+    var shoulder = v3(lm.spineAx + sign * lm.shoulderX, lm.shoulderY, lm.spinePerp);
+    var handT = new THREE.Vector3(hand.x, hand.y, hand.z);
+    var dir = handT.clone().sub(shoulder);
+    var armLen = dir.length();
+    if (armLen < 0.05) { armInfo[s] = null; return; }
+    dir.normalize();
+    var aLen = segLen(s + 'Arm', 0, 0.1067), fLen = segLen(s + 'ForeArm', 0, 0.1490), hLen = segLen(s + 'Hand', 0, 0.1195);
+    var tpl = aLen + fLen + hLen;
+    var armScale = tpl > 0 ? armLen / tpl : 1;
+    place(s + 'Shoulder', shoulder);
+    var elbow = shoulder.clone().addScaledVector(dir, aLen * armScale);
+    place(s + 'Arm', elbow);
+    var wrist = shoulder.clone().addScaledVector(dir, (aLen + fLen) * armScale);
+    place(s + 'ForeArm', wrist);
+    place(s + 'Hand', handT);
+    // Bàn tay con: giữ offset mẫu (theo frame đã xoay của xương tay — ngón
+    // tay chỉ xuống), chỉ scale theo armScale. Giữ nguyên dấu trong BONE_POS
+    // (trái +0.1185 / phải -0.1193) vì 2 tay xoay ngược nhau.
+    var he = P[s + 'Hand_end'] || [0.1185, 0, 0];
+    bones[s + 'Hand_end'].position.set(he[0] * armScale, he[1] * armScale, he[2] * armScale);
+    armInfo[s] = { dir: dir, armScale: armScale, elbow: elbow, wrist: wrist };
+  });
+  // --- Chân: hông → gối → cổ chân → ngón (thẳng đứng, gót chạm đất) ---
+  [['Left', 1], ['Right', -1]].forEach(function (sd) {
+    var s = sd[0], sign = sd[1];
+    var upLen = segLen(s + 'Leg', 1, 0.2164), lgLen = segLen(s + 'Foot', 1, 0.2152);
+    var legScale = (upLen + lgLen) > 0 ? (lm.hipY - lm.ankleY) / (upLen + lgLen) : 1;
+    var hip = v3(lm.spineAx + sign * lm.footAx, lm.hipY, lm.spinePerp);
+    place(s + 'UpLeg', hip);
+    place(s + 'Leg', v3(lm.spineAx + sign * lm.footAx, lm.hipY - upLen * legScale, lm.spinePerp));
+    place(s + 'Foot', v3(lm.spineAx + sign * lm.footAx, lm.ankleY, lm.spinePerp));
+    // Ngón chân: tiến về phía trước (trục ngang còn lại, cùng phía với tay
+    // so với thân) + hơi chúc xuống.
+    var toe = P[s + 'ToeBase'] || [0, -0.02, 0.10];
+    var toeEnd = P[s + 'ToeBase_end'] || [0, -0.005, 0.0491];
+    var fwd = v3(0, 0, fwdSign);
+    var ankle = W[s + 'Foot'];
+    var toeT = ankle.clone(); toeT.y += toe[1] * legScale; toeT.addScaledVector(fwd, toe[2] * legScale);
+    place(s + 'ToeBase', toeT);
+    var toeEndT = toeT.clone(); toeEndT.y += toeEnd[1] * legScale; toeEndT.addScaledVector(fwd, toeEnd[2] * legScale);
+    place(s + 'ToeBase_end', toeEndT);
+  });
+  built.rootBone.updateMatrixWorld(true);
+  // Xoay lại xương tay theo hướng cẳng tay đã fit (mẫu dùng ±X, sau fit tay
+  // chúc xuống vài độ + hướng ra ngoài).
+  if (armInfo.Left) orientHandBone(bones.LeftHand, [armInfo.Left.dir.x, armInfo.Left.dir.y, armInfo.Left.dir.z], 3.7);
+  if (armInfo.Right) orientHandBone(bones.RightHand, [armInfo.Right.dir.x, armInfo.Right.dir.y, armInfo.Right.dir.z], 9.2);
+  built.rootBone.updateMatrixWorld(true);
+  return { ok: true, H: H, minY: minY, armAxis: lm.armAxis, handL: lm.handL, handR: lm.handR,
+    handY: lm.handY, handAx: lm.handAx, handPerp: lm.handPerp,
+    shoulderX: lm.shoulderX, shoulderY: lm.shoulderY, headTopY: lm.headTopY,
+    headCenterY: lm.headCenterY, hipY: lm.hipY, ankleY: lm.ankleY, footAx: lm.footAx,
+    spineAx: lm.spineAx, spinePerp: lm.spinePerp, spineScale: spineScale, fitArm: lm.fitArm };
+}
 function buildMannequin() {
   var robe = mat(0xe8b90c, 0.85), skin = mat(0xf2c79b, 0.7), pants = mat(0x7a2e1d, 0.9),
       sash = mat(0xc0272d, 0.7), dark = mat(0x2b2b33, 0.8);
@@ -622,12 +948,18 @@ function posTrack(name, times, positions) {
 }
 function buildProceduralClips() {
   var clips = {};
+  // Hips base theo skeleton hiện tại (sau fit / skeleton file) — KHÔNG
+  // hardcode 0.5206: trước đây clip kéo Hips về 0.5206 dù skeleton đã fit
+  // hông 0.42, làm nhân vật nhảy lên ~10cm khi phát clip.
+  var hb = (restSnapshot && restSnapshot.Hips) ? restSnapshot.Hips.pos : null;
+  var hx = hb ? hb.x : 0, hy = hb ? hb.y : 0.5206, hz = hb ? hb.z : 0;
+  function hipsPos(dx, dy, dz) { return [hx + dx, hy + dy, hz + dz]; }
   var tI = [0, 0.6, 1.2, 1.8, 2.4];
   clips.Idle = new THREE.AnimationClip('Idle', 2.4, [
     qTrack('Spine', tI, [[0,0,0],[2,0,0],[0,0,0],[-2,0,0],[0,0,0]]),
     qTrack('LeftArm', tI, [[0,0,0],[0,0,3],[0,0,0],[0,0,-3],[0,0,0]]),
     qTrack('RightArm', tI, [[0,0,0],[0,0,-3],[0,0,0],[0,0,3],[0,0,0]]),
-    posTrack('Hips', tI, [[0,0.5206,0],[0,0.5306,0],[0,0.5206,0],[0,0.5106,0],[0,0.5206,0]])
+    posTrack('Hips', tI, [hipsPos(0,0,0),hipsPos(0,0.01,0),hipsPos(0,0,0),hipsPos(0,-0.01,0),hipsPos(0,0,0)])
   ]);
   var tR = [0, 0.2, 0.4, 0.6, 0.8];
   clips.Run = new THREE.AnimationClip('Run', 0.8, [
@@ -637,20 +969,37 @@ function buildProceduralClips() {
     qTrack('RightLeg', tR, [[0,0,0],[35,0,0],[0,0,0],[20,0,0],[0,0,0]]),
     qTrack('LeftArm', tR, [[20,0,0],[0,0,0],[-20,0,0],[0,0,0],[20,0,0]]),
     qTrack('RightArm', tR, [[-20,0,0],[0,0,0],[20,0,0],[0,0,0],[-20,0,0]]),
-    posTrack('Hips', tR, [[0,0.5206,0],[0,0.5006,0],[0,0.5206,0],[0,0.5006,0],[0,0.5206,0]])
+    posTrack('Hips', tR, [hipsPos(0,0,0),hipsPos(0,-0.02,0),hipsPos(0,0,0),hipsPos(0,-0.02,0),hipsPos(0,0,0)])
   ]);
   // PunchProc 2.333s — theo đúng pha đo thật của clip Punch: t=0 tay trái
-  // đấm thẳng → thu → t=0.83–1.17 tay phải đấm thẳng → thu → về đúng key
-  // đầu lúc 2.333s để loop không giật. Hips Y cố định 52.06cm, KHÔNG root motion.
+  // đấm thẳng (khuỷu 145°) → thu → t=0.83–1.17 tay phải đấm thẳng
+  // (khuỷu 150–157°) → thu → về đúng key đầu lúc 2.333s để loop không giật.
+  // Clip PROCEDURAL (không phải keys thật): phần tay giữ đúng góc đo thật;
+  // Hips bob nhẹ ±1cm + chuyển trọng tâm ±1.5cm, thân xoắn, chân gánh trọng
+  // tâm — để mesh đã skin biến dạng toàn thân, không chỉ 2 tay. (Clip thật
+  // có Hips Y cố định 52.06cm, KHÔNG root motion.)
   var tP = [0, 0.5, 0.83, 1.17, 1.67, 2.333];
-  var hipsFixed = [[0,0.5206,0],[0,0.5206,0],[0,0.5206,0],[0,0.5206,0],[0,0.5206,0],[0,0.5206,0]];
   clips.PunchProc = new THREE.AnimationClip('PunchProc', 2.333, [
-    posTrack('Hips', tP, hipsFixed),
+    posTrack('Hips', tP, [hipsPos(0.015,0,0.01),hipsPos(0,0.005,0),hipsPos(-0.015,-0.005,0.02),hipsPos(-0.015,-0.005,0.02),hipsPos(0,0.005,0),hipsPos(0.015,0,0.01)]),
     qTrack('Spine', tP, [[0,-8,0],[0,-4,0],[0,8,0],[0,8,0],[0,-2,0],[0,-8,0]]),
+    qTrack('Spine1', tP, [[0,-6,0],[0,-3,0],[0,6,0],[0,6,0],[0,-1,0],[0,-6,0]]),
+    qTrack('Spine2', tP, [[0,-4,0],[0,-2,0],[0,4,0],[0,4,0],[0,-1,0],[0,-4,0]]),
+    qTrack('Neck', tP, [[0,6,0],[0,3,0],[0,-6,0],[0,-6,0],[0,1,0],[0,6,0]]),
+    qTrack('Head', tP, [[0,4,0],[0,2,0],[0,-4,0],[0,-4,0],[0,1,0],[0,4,0]]),
+    qTrack('LeftShoulder', tP, [[0,0,8],[0,0,4],[0,0,0],[0,0,0],[0,0,2],[0,0,8]]),
+    qTrack('RightShoulder', tP, [[0,0,-2],[0,0,-1],[0,0,-8],[0,0,-8],[0,0,-3],[0,0,-2]]),
     qTrack('LeftArm', tP, [[0,-80,0],[0,-30,0],[0,-10,0],[0,-10,0],[0,-40,0],[0,-80,0]]),
     qTrack('LeftForeArm', tP, [[0,-35,0],[0,-20,0],[0,100,0],[0,100,0],[0,-60,0],[0,-35,0]]),
+    qTrack('LeftHand', tP, [[0,-10,0],[0,-5,0],[0,10,0],[0,10,0],[0,-5,0],[0,-10,0]]),
     qTrack('RightArm', tP, [[0,20,0],[0,10,0],[0,85,0],[0,85,0],[0,30,0],[0,20,0]]),
-    qTrack('RightForeArm', tP, [[0,85,0],[0,80,0],[0,-25,0],[0,-25,0],[0,60,0],[0,85,0]])
+    qTrack('RightForeArm', tP, [[0,85,0],[0,80,0],[0,-25,0],[0,-25,0],[0,60,0],[0,85,0]]),
+    qTrack('RightHand', tP, [[0,10,0],[0,5,0],[0,-15,0],[0,-15,0],[0,5,0],[0,10,0]]),
+    qTrack('LeftUpLeg', tP, [[-8,0,0],[-4,0,0],[0,0,0],[0,0,0],[-3,0,0],[-8,0,0]]),
+    qTrack('LeftLeg', tP, [[12,0,0],[6,0,0],[2,0,0],[2,0,0],[4,0,0],[12,0,0]]),
+    qTrack('LeftFoot', tP, [[0,0,0],[0,0,0],[0,3,0],[0,3,0],[0,0,0],[0,0,0]]),
+    qTrack('RightUpLeg', tP, [[0,0,0],[-2,0,0],[-8,0,0],[-8,0,0],[-4,0,0],[0,0,0]]),
+    qTrack('RightLeg', tP, [[2,0,0],[3,0,0],[12,0,0],[12,0,0],[6,0,0],[2,0,0]]),
+    qTrack('RightFoot', tP, [[0,0,0],[0,0,0],[0,-3,0],[0,-3,0],[0,0,0],[0,0,0]])
   ]);
   var tT = [0, 0.033], tpTracks = [];
   HY3D_RIG.forEach(function (b) {
@@ -932,67 +1281,93 @@ function autoRig() {
     }
     logMsg('Kiểm tra A/T-pose: đạt (tay ' + pose.armDeg + '°, chân ' + pose.legDeg + '° ≤ 25°).');
   }
-  // Dựng skeleton 28 xương theo Box3 (chuẩn 1.53m) + skin weights theo khoảng cách.
+  // Dựng skeleton 28 xương theo Box3 (chuẩn 1.53m) + skin mesh thành
+  // SkinnedMesh thật gắn với skeleton (không còn attach mesh cứng dưới Hips —
+  // mesh cứng không biến dạng theo xương nên preview đứng yên ở A-pose và
+  // FBX xuất ra không có skin/cluster).
   var box = new THREE.Box3().setFromObject(charRoot);
   var size = new THREE.Vector3(); box.getSize(size);
   var sf = size.y > 0 ? (1.53 / size.y) : 1;
   var built = buildHY3DSkeleton(sf);
-  // Gắn mesh hiện tại vào skeleton: mesh không xương thì gắn dưới Hips để
-  // đi theo nhân vật (dùng attach để giữ nguyên vị trí thế giới);
-  // mesh đã có xương thì giữ nguyên.
+  var skinVerts = 0, skinBad = 0, skinUsed = 0;
   if (Object.keys(bones).length < 5) {
+    // Gỡ skeleton cũ (nếu có, <5 xương khớp) để writer không gom trùng xương;
+    // mesh nào đang nằm dưới xương cũ thì cứu ra charRoot trước (giữ vị trí thế giới).
+    var oldRoots = [];
+    charRoot.traverse(function (o) { if (o.isBone && !(o.parent && o.parent.isBone)) oldRoots.push(o); });
+    oldRoots.forEach(function (rb) { rb.traverse(function (o) { if (o.isMesh) charRoot.attach(o); }); });
+    oldRoots.forEach(function (b) { if (b.parent) b.parent.remove(b); });
     charRoot.add(built.rootBone);
     charRoot.updateMatrixWorld(true);
+    // Mesh rigid để đo landmark fit skeleton (lấy mesh nhiều đỉnh nhất).
     var meshes = [];
-    charRoot.traverse(function (o) { if (o.isMesh) meshes.push(o); });
-    meshes.forEach(function (m) { built.bones.Hips.attach(m); });
+    charRoot.traverse(function (o) { if (o.isMesh && !o.isSkinnedMesh) meshes.push(o); });
+    var fitMesh = null, fitVerts = -1;
+    meshes.forEach(function (mm) {
+      var vc = mm.geometry && mm.geometry.attributes && mm.geometry.attributes.position ? mm.geometry.attributes.position.count : 0;
+      if (vc > fitVerts) { fitVerts = vc; fitMesh = mm; }
+    });
+    // Fit skeleton mẫu theo landmark đo thật từ mesh (xem fitSkeletonToMesh):
+    // skeleton mẫu theo tỉ lệ bonechar không khớp nhân vật khác tỉ lệ.
+    var fitRep = fitMesh ? fitSkeletonToMesh(fitMesh, built) : { ok: false, reason: 'không có mesh để đo' };
+    if (fitRep.ok) {
+      charRoot.updateMatrixWorld(true);
+      logMsg('Fit skeleton theo mesh: tay (±' + fitRep.handL.ax.toFixed(2) + ', ' + fitRep.handY.toFixed(2) + ') · vai ' + fitRep.shoulderY.toFixed(2) + ' · đầu ' + fitRep.headCenterY.toFixed(2) + ' (đỉnh ' + fitRep.headTopY.toFixed(2) + ') · hông ' + fitRep.hipY.toFixed(2) + ' · chân chạm đất.');
+    } else {
+      logMsg('Fit skeleton: không khớp được (' + fitRep.reason + ') — giữ skeleton mẫu 1.53m, có thể lệch với nhân vật.');
+    }
+    // Thứ tự xương của skeleton: đúng thứ tự HY3D_RIG (root đầu tiên).
+    var boneList = HY3D_RIG.map(function (r) { return built.bones[r.name]; }).filter(function (b) { return !!b; });
+    var skeleton = new THREE.Skeleton(boneList);
+    // Đoạn xương (world) để tính skin weights: cha → con.
+    var segments = [];
+    HY3D_RIG.forEach(function (b) {
+      if (!built.bones[b.name] || !b.parent || !built.bones[b.parent]) return;
+      var a = built.bones[b.parent].getWorldPosition(new THREE.Vector3());
+      var c = built.bones[b.name].getWorldPosition(new THREE.Vector3());
+      segments.push({ bone: b.name, index: boneList.indexOf(built.bones[b.name]), a: [a.x, a.y, a.z], b: [c.x, c.y, c.z] });
+    });
+    // Skin từng mesh rigid thành SkinnedMesh rồi bind cùng skeleton
+    // (bind sau khi matrixWorld đã cập nhật, xương đang ở tư thế bind).
+    var skinnedList = [];
+    meshes.forEach(function (m) {
+      var r = skinOneMesh(m, segments, boneList);
+      if (!r) return;
+      if (m.parent) { m.parent.add(r.skinned); m.parent.remove(m); }
+      skinnedList.push(r.skinned);
+      skinVerts += r.verts; skinBad += r.bad;
+      if (r.usedBones.length > skinUsed) skinUsed = r.usedBones.length;
+    });
+    charRoot.updateMatrixWorld(true);
+    skinnedList.forEach(function (s) { s.bind(skeleton, s.matrixWorld); });
     bones = built.bones;
     attachSkeletonHelper(built.rootBone);
     mixer = new THREE.AnimationMixer(built.rootBone);
     captureRest();
     buildProceduralClips();
+    logMsg('Skin xong: ' + skinnedList.length + ' mesh → SkinnedMesh · ' + skinVerts.toLocaleString('en-US') + ' đỉnh · ' + skinUsed + ' xương có weight · ' + skinBad + ' đỉnh lệch tổng.');
   }
-  // Tính skin weights mẫu (tối đa 2000 đỉnh) để báo cáo — tổng luôn = 1.0.
-  var sampleVerts = [], segments = [];
-  HY3D_RIG.forEach(function (b) {
-    if (!bones[b.name] || !b.parent || !bones[b.parent]) return;
-    var a = bones[b.parent].getWorldPosition(new THREE.Vector3());
-    var c = bones[b.name].getWorldPosition(new THREE.Vector3());
-    segments.push({ bone: b.name, a: [a.x, a.y, a.z], b: [c.x, c.y, c.z] });
-  });
-  charRoot.traverse(function (o) {
-    if (!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
-    var pos = o.geometry.attributes.position;
-    var step = Math.max(1, Math.floor(pos.count / 2000));
-    for (var i = 0; i < pos.count && sampleVerts.length < 2000; i += step) {
-      var v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
-      sampleVerts.push([v.x, v.y, v.z]);
-    }
-  });
-  var weights = sampleVerts.length ? computeSkinWeights(sampleVerts, segments) : [];
-  var badSum = 0;
-  weights.forEach(function (ws) { var s = 0; ws.forEach(function (w) { s += w.w; }); if (Math.abs(s - 1) > 0.001) badSum++; });
   rigged = true; skeletonFromFile = false;
   $('rig-source-label').textContent = label + ' — đã rig: 28 xương HY3D';
-  renderRigReport(weights.length, badSum);
+  renderRigReport(skinVerts || null, skinBad, skinUsed || null);
   updateModelStats();
-  logMsg('Auto-Rig xong: 28 xương HY3D · skin 23 xương · skin weights mẫu ' + weights.length + ' đỉnh, ' + badSum + ' đỉnh lệch tổng (phải = 0). Skeleton hiện sẵn trong viewport.');
+  logMsg('Auto-Rig xong: 28 xương HY3D · skin ' + (skinUsed || 23) + ' xương · skin weights ' + (skinVerts ? skinVerts.toLocaleString('en-US') + ' đỉnh, ' + skinBad + ' đỉnh lệch tổng (phải = 0)' : 'chưa skin lại (giữ nguyên mesh/skeleton hiện tại)') + '. Skeleton hiện sẵn trong viewport.');
   // Tự động gen file FBX đã rig (rigFbxUrl tương đương) vào danh sách File đã gen.
   autoGenRiggedFBX(label);
   playClip('Idle', { force: true });
 }
-function renderRigReport(sampleCount, badSum) {
+function renderRigReport(sampleCount, badSum, skinBones) {
   var el = $('rig-report');
   if (!el) return;
   var hands = measureHandAngles();
   var stats = countModelFacesVerts(charRoot);
   var pose = Object.keys(bones).length >= 5 ? checkPose() : null;
   var html = 'Trạng thái: ' + (rigged ? '<span class="ok">Đã rig</span>' : '<span class="bad">Chưa rig</span>') +
-    ' · Skeleton: ' + Object.keys(bones).length + ' xương HY3D · skin 23 xương' +
+    ' · Skeleton: ' + Object.keys(bones).length + ' xương HY3D · skin ' + (skinBones || 23) + ' xương' +
     '<br>Face: ' + stats.faces.toLocaleString('en-US') + ' (cảnh báo &gt;100.000 · chặn &gt;500.000)' +
     '<br>Góc tay lúc bind: trái ' + (hands.left == null ? '—' : hands.left + '°') + ' / phải ' + (hands.right == null ? '—' : hands.right + '°') + ' (chuẩn HY3D 3.7° / 9.2°, cảnh báo nếu &gt;10°)' +
     (pose ? '<br>A/T-pose: ' + (pose.ok ? '<span class="ok">đạt</span>' : '<span class="bad">chưa đạt</span>') + ' (tay ' + pose.armDeg + '°, chân ' + pose.legDeg + '°)' : '') +
-    (sampleCount != null ? '<br>Skin weights mẫu: ' + sampleCount + ' đỉnh · ' + badSum + ' đỉnh lệch tổng' : '');
+    (sampleCount != null ? '<br>Skin weights: ' + sampleCount + ' đỉnh · ' + badSum + ' đỉnh lệch tổng' : '');
   el.innerHTML = html;
 }
 </script>
@@ -1124,8 +1499,10 @@ function downloadBlob(blob, filename) {
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
-  setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  // Để <a> trong DOM thêm 1 nhịp rồi mới gỡ: một số trình duyệt cần phần tử
+  // còn gắn thì mới bắt đầu tải. Giữ URL 30s rồi thu hồi.
+  setTimeout(function () { if (a.parentNode) a.parentNode.removeChild(a); }, 100);
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
   return a;
 }
 function downloadBaseName() {
@@ -1152,9 +1529,14 @@ function buildMotionFBX(m) {
   }
   var fileName = downloadBaseName() + '.fbx';
   try {
-    var res = window.PixiStudio.FBXBinary.write(charRoot, {
-      version: 7300, ascii: true,
-      animations: clip ? [{ name: clipName, clip: clip }] : []
+    var res;
+    // Ghi FBX ở tư thế rest: xương đang phát clip giữa chừng sẽ làm bind
+    // pose / TransformLink lệch khỏi geometry (đang ở bind pose).
+    withRestPose(function () {
+      res = window.PixiStudio.FBXBinary.write(charRoot, {
+        version: 7300, ascii: true,
+        animations: clip ? [{ name: clipName, clip: clip }] : []
+      });
     });
     var blob = new Blob([res.bytes], { type: 'application/octet-stream' });
     logMsg('Đã build FBX local: ' + fileName + ' — ' + res.report.meshes + ' mesh · ' + res.report.bones + ' xương · ' +
@@ -1200,9 +1582,13 @@ function autoGenMotionFBX(m) {
   var built = buildMotionFBX(m);
   if (!built) return;
   addGeneratedFile(built);
+  // Toast trước để người dùng thấy rõ file đã tạo xong và đang tải — tải tự
+  // động chạy ngoài cử chỉ người dùng nên trình duyệt có thể chặn lặng
+  // (không báo lỗi): nút "Tải lại" trong mục File đã gen luôn có sẵn.
+  showToast('Đã tạo file ' + built.fileName + ' — đang tải xuống…');
+  logMsg('Đã tạo file: ' + built.fileName + ' — đang tự động tải xuống. Nếu trình duyệt chặn tải tự động, bấm nút "Tải lại" trong mục File đã gen.');
   try {
-    downloadBlob(built.blob, built.fileName);
-    logMsg('Đã tự động tải về: ' + built.fileName + ' — nếu trình duyệt chặn tải tự động, bấm nút "Tải lại" trong mục File đã gen.');
+    setTimeout(function () { downloadBlob(built.blob, built.fileName); }, 150);
   } catch (e) {
     logMsg('Trình duyệt chặn tải tự động (' + e.message + ') — bấm nút "Tải lại" trong mục File đã gen để tải ' + built.fileName + '.');
   }
@@ -1218,7 +1604,10 @@ function autoGenRiggedFBX(label) {
   var base = (label || 'TencentModel').replace(/[^A-Za-z0-9]+/g, '') || 'TencentModel';
   var fileName = base + '-rigged.fbx';
   try {
-    var res = window.PixiStudio.FBXBinary.write(charRoot, { version: 7300, ascii: true, animations: [] });
+    var res;
+    withRestPose(function () {
+      res = window.PixiStudio.FBXBinary.write(charRoot, { version: 7300, ascii: true, animations: [] });
+    });
     var blob = new Blob([res.bytes], { type: 'application/octet-stream' });
     addGeneratedFile({ blob: blob, fileName: fileName, clipName: '(không clip — chỉ rig)', kind: 'rig', motion: '' });
     logMsg('Đã tự gen file FBX đã rig (rigFbxUrl tương đương): ' + fileName + ' — ' + res.report.meshes + ' mesh · ' + res.report.bones + ' xương. Nằm trong mục File đã gen, bấm "Tải lại" để tải về.');
@@ -1235,7 +1624,10 @@ function downloadFBX() {
     var clip = currentClip ? getClip(currentClip) : null;
     var name = downloadBaseName();
     try {
-      var res = window.PixiStudio.FBXBinary.write(charRoot, { version: 7300, ascii: true, animations: clip ? [{ name: name, clip: clip }] : [] });
+      var res;
+      withRestPose(function () {
+        res = window.PixiStudio.FBXBinary.write(charRoot, { version: 7300, ascii: true, animations: clip ? [{ name: name, clip: clip }] : [] });
+      });
       downloadBlob(new Blob([res.bytes], { type: 'application/octet-stream' }), name + '.fbx');
       logMsg('Đã xuất FBX: ' + name + '.fbx — ' + res.report.meshes + ' mesh · ' + res.report.bones + ' xương.');
     } catch (e) { logMsg('Lỗi xuất FBX: ' + e.message); }
