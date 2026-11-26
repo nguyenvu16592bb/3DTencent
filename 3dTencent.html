@@ -57,6 +57,15 @@
   #rig-report{font-size:12px;line-height:1.7;color:#c7d0e0;background:#141824;border:1px solid #2a3040;border-radius:10px;padding:8px}
   .rig-ok{color:#7cc184;font-weight:700}
   .rig-bad{color:#ff7a7a;font-weight:700}
+  .badge.gen{background:#1d3a24;color:#7cc184}
+  .badge.ungen{background:#333a4d;color:#9aa7bd}
+  #ae-toast{display:none;background:#2f6fb2;color:#fff;border-radius:8px;padding:8px;font-size:13px;line-height:1.5}
+  #ae-toast.show{display:block}
+  #running-nodes{font-size:12px;line-height:1.7;color:#c7d0e0;background:#141824;border:1px solid #2a3040;border-radius:10px;padding:8px}
+  #viewport-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 8px;background:#141824;border-bottom:1px solid #2a3040}
+  #viewport-bar select{min-height:36px}
+  #viewport-bar button{min-height:36px}
+  #model-stats{font-size:12px;color:#9aa7bd}
 </style>
 </head>
 <body>
@@ -73,11 +82,24 @@
     <button id="btn-follow" class="on">Follow cam</button>
     <button id="btn-rig">Panel Rig</button>
   </div>
+  <div id="viewport-bar">
+    <label for="view-mode">Hiển thị</label>
+    <select id="view-mode">
+      <option value="geometry">Geometry</option>
+      <option value="wireframe">Wireframe &amp; Geometry</option>
+      <option value="texture">Texture</option>
+      <option value="white">White (white-mold)</option>
+    </select>
+    <button id="btn-bbox">Bounding Box</button>
+    <button id="btn-grid" class="on">Ground Grid</button>
+    <span id="model-stats">Model Face Count — · Vertex Count —</span>
+  </div>
   <div id="stage">
     <canvas id="game-canvas"></canvas>
     <div id="hud">
       <div class="pill">FPS <b id="hud-fps">—</b></div>
       <div class="pill">Tris <b id="hud-tris">—</b></div>
+      <div class="pill">Model <b id="hud-stats">—</b></div>
       <div class="pill">Clip <b id="hud-clip">Idle</b> <span id="hud-time">0.00 / 2.40s</span></div>
       <div class="pill">Nhân vật <b id="hud-src">Mannequin HY3D (procedural)</b></div>
     </div>
@@ -165,6 +187,8 @@
         <button id="btn-autorig" class="big">Auto-Rig kiểu HY3D</button>
         <span class="note">Dựng skeleton 28 xương theo HY3D_RIG, scale theo chiều cao mesh thật (Box3, chuẩn 1.53m), bind T-pose (tay dang ngang ±X), skin bằng weights theo khoảng cách tới đoạn xương gần nhất, chuẩn hoá tổng = 1.0.</span>
       </div>
+      <div id="rig-model-stats"><div class="note">Chưa có model để kiểm tra — chọn nguồn mesh rồi bấm Auto-Rig (hoặc load model ở tab Game, số liệu sẽ hiện ở đây).</div></div>
+      <div class="row"><label><input type="checkbox" id="rig-show-skeleton" checked style="min-height:24px;width:24px"> Hiện skeleton trong viewport (mặc định HY3D: bật sẵn)</label><span class="note">Skeleton: 28 xương HY3D · skin 23 xương.</span></div>
       <div id="rig-report"><div class="note">Chưa rig — chọn nguồn mesh rồi bấm Auto-Rig kiểu HY3D. Sau khi rig sẽ hiện thống kê skin + góc tay lúc bind + nút xuất.</div></div>
       <div class="row">
         <button id="btn-export-rig">Xuất Rig JSON</button>
@@ -177,6 +201,10 @@
       <div class="row"><b>Animation (ae)</b><span class="note">Motion library kiểu HY3D: chọn motion → kiểm tra tương thích retarget → áp dụng lên nhân vật → xem timeline → xuất clip.</span></div>
       <div class="row"><b>Motion library</b><span class="note">Punch ưu tiên clip FBX thật (nếu đã load punch.fbx), không thì dùng Punch procedural theo đúng pha đo thật.</span></div>
       <div id="motion-list"></div>
+      <div id="ae-toast"></div>
+      <div class="row"><button id="btn-generate" class="big">Generate Now</button><span class="note">Chọn 1 motion trong thư viện rồi bấm Generate Now — mô phỏng cloud HY3D: queue → processing → done, rồi tự preview loop. Mỗi motion chỉ generate 1 lần cho 1 model (chọn lại motion đã generate sẽ báo như HY3D).</span></div>
+      <div class="row"><b>Running Nodes</b><span class="note">Tiến độ tác vụ đang chạy (kiểu HY3D).</span></div>
+      <div id="running-nodes"><div class="note">Chưa có tác vụ nào đang chạy.</div></div>
       <div class="row"><b>Retarget — map xương HY3D ↔ Mixamo</b><span class="note">Tên xương HY3D = tên Mixamo bỏ prefix <b>mixamorig:</b> nên clip HY3D map thẳng sang skeleton Mixamo. Áp dụng motion chỉ chạy khi ≥80% xương khớp tên.</span></div>
       <div id="anim-compat">Chưa kiểm tra tương thích — bấm Áp dụng ở 1 motion để kiểm tra.</div>
       <table id="retarget-table">
@@ -191,6 +219,14 @@
         <tbody id="punch-body"></tbody>
       </table>
       <div class="note">Tên clip Punch thật có hậu tố <b>_remap</b> nghĩa là motion đã được retarget trong Blender trước khi xuất (đúng như file punch.fbx thật: <span style="word-break:break-all">Armature|39f5afe64eb927df712c0fb9326f718b_remap</span>). Clip loop kín (key đầu = key cuối), KHÔNG root motion (Hips Y cố định 52.1cm).</div>
+      <div class="row"><b>Download — xuất file</b><span class="note">Tên file theo tên motion (vd. ChargedPunch.fbx), khác HY3D dùng tên ngẫu nhiên. FBX cần file js/exporter/fbx-binary.js (copy từ repo 3D-Model sang repo này); GLB dùng GLTFExporter CDN; OBJ/STL chỉ mesh ở tư thế bind, không animation.</span></div>
+      <div class="row">
+        <button id="btn-dl-fbx">FBX (.fbx)</button>
+        <button id="btn-dl-glb">GLB (.glb)</button>
+        <button id="btn-dl-obj">OBJ (.obj)</button>
+        <button id="btn-dl-stl">STL (.stl)</button>
+        <button id="btn-dl-usdz" disabled>USDZ (chưa hỗ trợ — vòng sau)</button>
+      </div>
     </div>
   </div>
 </div>
@@ -213,6 +249,8 @@ window.__meLibFallback2 = function (unpkg) {
         onerror="window.__meLibFallback('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js','https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js')"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"
         onerror="window.__meLibFallback2('https://unpkg.com/three@0.128.0/examples/js/exporters/GLTFExporter.js')"></script>
+<script>window.PixiStudio = window.PixiStudio || {};</script>
+<script src="js/exporter/fbx-binary.js"></script>
 <script>
 (function () {
   var missing = [];
@@ -283,6 +321,14 @@ function computeSkinWeights(verts, segments) {
   }
   out.usedBones = Object.keys(used).map(function (k) { return parseInt(k, 10); }).sort(function (a, b) { return a - b; });
   return out;
+}
+function faceCountFromGeometry(posCount, indexCount) {
+  // Thuần: đếm mặt/tam giác của 1 geometry. Có index thì faces = index/3,
+  // không index (non-indexed) thì faces = verts/3. HY3D: cảnh báo >100.000
+  // mặt, chặn rig >500.000 mặt.
+  var verts = posCount | 0;
+  var faces = indexCount ? Math.floor(indexCount / 3) : Math.floor(verts / 3);
+  return { faces: faces, verts: verts };
 }
 </script>
 <script>
@@ -360,14 +406,64 @@ var PUNCH_SPIN_BONES = [
   { name: 'RightLeg', deg: null }, { name: 'RightFoot', deg: null },
   { name: 'RightToeBase', deg: null }
 ];
-// ---- Motion library (tab Animation ae) ----
-// Punch dùng clip FBX thật nếu đã load (PunchFBX), không thì PunchProc.
+// ---- Motion library (tab Animation ae): đủ 46 template kiểu HY3D ----
+// Trích từ ~/workspace/.hy3d-site/AE_ANALYSIS.md §(d): bản đồ i18n
+// motion:{tiếng Trung: tiếng Anh} trong bundle HY3D + DOM đã lưu.
+// Chỉ Charged Punch có dữ liệu clip thật đo được (2.333s/60fps/141 keys,
+// clip Armature|39f5..._remap trong punch.fbx); các motion khác chưa có
+// thời lượng thật trong file lưu (dur: null — KHÔNG bịa số), khi phát sẽ
+// dùng clip procedural theo nhóm (base) và ghi rõ trong log là thay thế.
+// base: clip procedural dùng để preview (Idle / Run / PunchProc).
+// kind: 'punch' = dùng clip Punch thật nếu đã load punch.fbx;
+//       'combo' = Combo Attack, phát Punch ×3 liên tiếp;
+//       'proc'  = phát clip base.
 var MOTIONS = [
-  { id: 'Punch', name: 'Đấm thẳng (Punch)', dur: 2.333, fps: 60, keys: 141, loop: true,  kind: 'punch' },
-  { id: 'Idle',  name: 'Idle — thở',        dur: 2.4,   fps: null, keys: null, loop: true,  kind: 'proc' },
-  { id: 'Run',   name: 'Run — chạy',        dur: 0.8,   fps: null, keys: null, loop: true,  kind: 'proc' },
-  { id: 'TPose', name: 'T-Pose',            dur: 0.033, fps: null, keys: null, loop: false, kind: 'proc' },
-  { id: 'Combo', name: 'Combo Đấm ×3',      dur: 6.999, fps: 60, keys: 141, loop: false, kind: 'combo' }
+  { id: 'RoundhouseKick', cn: '回旋踢', en: 'Roundhouse Kick', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'LeftHook', cn: '左勾拳', en: 'Left Hook', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'ChargedAttack', cn: '蓄力攻击', en: 'Charged Attack', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'ChargedPunch', cn: '蓄力出拳', en: 'Charged Punch', base: 'PunchProc', dur: 2.333, loop: true, kind: 'punch' },
+  { id: 'DoubleStrike', cn: '二连击打', en: 'Double Strike', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'DoubleStrike2', cn: '二连击打-2', en: 'Double Strike-2', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'Backstep', cn: '后撤', en: 'Backstep', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Hit', cn: '受击', en: 'Hit', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Hit2', cn: '受击-2', en: 'Hit-2', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Hit3', cn: '受击-3', en: 'Hit-3', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'HitDown1', cn: '受击倒地-1', en: 'Hit Down-1', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'HitDown2', cn: '受击倒地-2', en: 'Hit Down-2', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Landing', cn: '落地', en: 'Landing', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Dejected', cn: '沮丧', en: 'Dejected', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Jab', cn: '刺拳', en: 'Jab', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'ComboAttack', cn: '连续击打', en: 'Combo Attack', base: 'PunchProc', dur: null, loop: false, kind: 'combo' },
+  { id: 'Kick', cn: '踢腿', en: 'Kick', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'SideKick', cn: '侧踢', en: 'Side Kick', base: 'PunchProc', dur: null, loop: true, kind: 'proc' },
+  { id: 'TaiChi', cn: '打太极', en: 'Tai Chi', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Backflip', cn: '后空翻', en: 'Backflip', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'SquatTurn', cn: '蹲姿转体', en: 'Squat Turn', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Walk1', cn: '走路-1', en: 'Walk-1', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Walk2', cn: '走路-2', en: 'Walk-2', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Walk3', cn: '走路-3', en: 'Walk-3', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Idle1', cn: '待机-1', en: 'Idle-1', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Idle2', cn: '待机-2', en: 'Idle-2', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'StreetDance', cn: '街舞', en: 'Street Dance', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'TwistDance', cn: '扭扭舞', en: 'Twist Dance', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'TurnLeft', cn: '左转弯', en: 'Turn Left', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'TurnRight', cn: '右转弯', en: 'Turn Right', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Jog', cn: '慢跑', en: 'Jog', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Jog2', cn: '慢跑-2', en: 'Jog-2', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Run', cn: '奔跑', en: 'Run', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Sprint1', cn: '冲刺跑-1', en: 'Sprint-1', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Sprint2', cn: '冲刺跑-2', en: 'Sprint-2', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Sprint3', cn: '冲刺跑-3', en: 'Sprint-3', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'JumpInPlace', cn: '原地跳', en: 'Jump in Place', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Slide', cn: '滑铲', en: 'Slide', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'LongJumpForward', cn: '向前大跳', en: 'Long Jump Forward', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'LongJumpForward2', cn: '向前大跳-2', en: 'Long Jump Forward-2', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Leap', cn: '跨越', en: 'Leap', base: 'Run', dur: null, loop: true, kind: 'proc' },
+  { id: 'Intimidate', cn: '恐吓', en: 'Intimidate', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'FallForward', cn: '向前跌倒', en: 'Fall Forward', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'TurnRight2', cn: '右转', en: 'Turn Right', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'TurnAround', cn: '转身', en: 'Turn Around', base: 'Idle', dur: null, loop: true, kind: 'proc' },
+  { id: 'Shockwave', cn: '发送冲击波', en: 'Shockwave', base: 'PunchProc', dur: null, loop: true, kind: 'proc' }
 ];
 
 // ---- Log (giữ 3 dòng cuối) ----
@@ -393,6 +489,14 @@ var rigSourceObj = null, rigSourceLabel = '';
 var rigState = { rigged: false, stats: null, handAngles: null };
 var comboRemaining = 0;   // Combo Đấm ×3: số cú đấm còn lại trong chuỗi
 var comboToken = 0;       // chống chuỗi combo cũ chạy tiếp sau khi user đổi clip
+var selectedMotion = null;   // motion đang chọn trong thư viện ae (chưa generate cũng chọn được)
+var generatedMotions = {};   // id -> true (đã generate cho model hiện tại; đổi model thì reset)
+var genBusy = false;         // đang generate (chặn generate trùng)
+var genToken = 0;            // chống timer generate cũ chạy sau khi đổi model
+var runningNodes = [];       // [{name, status}] cho panel Running Nodes kiểu HY3D
+var gridHelper = null, bboxHelper = null;
+var origMaterials = null;    // lưu material gốc khi đổi sang White (white-mold)
+var modelStats = { faces: 0, verts: 0, meshes: 0 };
 var clock = new THREE.Clock();
 var fpsHist = [];
 var moveState = { x: 0, z: 0, running: false };
@@ -431,7 +535,8 @@ function init() {
     new THREE.MeshStandardMaterial({ color: 0xc9a227, roughness: 0.6 }));
   ring.rotation.x = -Math.PI / 2; ring.position.y = 0.01; ring.receiveShadow = true;
   scene.add(ring);
-  scene.add(new THREE.GridHelper(16, 16, 0x888888, 0x444455));
+  gridHelper = new THREE.GridHelper(16, 16, 0x888888, 0x444455);
+  scene.add(gridHelper);
 
   // Prop low-poly nhẹ: đá + trúc
   var rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8f98, roughness: 1 });
@@ -570,6 +675,7 @@ function buildMannequin() {
   playClip('Idle', { force: true });
   charSource = 'Mannequin HY3D (procedural)';
   document.getElementById('hud-src').textContent = charSource;
+  updateModelStats();
 }
 
 function captureRest() {
@@ -772,9 +878,54 @@ function setCharacter(obj, sourceLabel, clips, opts) {
   charSource = sourceLabel;
   document.getElementById('hud-src').textContent = sourceLabel;
   refreshClipSelect();
+  // Đổi model = đổi "tác phẩm" kiểu HY3D: reset trạng thái generate (mỗi
+  // motion chỉ generate 1 lần cho 1 model), huỷ timer generate cũ.
+  generatedMotions = {}; selectedMotion = null; genBusy = false; genToken++;
+  runningNodes = []; renderRunningNodes();
+  var gb = document.getElementById('btn-generate');
+  if (gb) gb.disabled = false;
+  updateModelStats();
   var first = fbxClips.PunchFBX ? 'PunchFBX' : (procClipsOK ? 'Idle' : Object.keys(fbxClips).filter(function (k) { return k !== '__proc__'; })[0] || 'Idle');
   playClip(first, { force: true });
   logMsg('Đã load nhân vật: ' + sourceLabel + (procClipsOK ? '' : ' (procedural tắt)'));
+}
+
+// ---- Đếm Face / Vertex thật của model (panel Bone Binding + viewport) ----
+// HY3D hiện "Model Face Count / Vertex Count" ở panel phải; riggingTip:
+// nên <100.000 mặt, >500.000 mặt thì không rig được.
+function countModelFacesVerts(rootObj) {
+  var faces = 0, verts = 0, meshes = 0;
+  rootObj.traverse(function (o) {
+    if (!o.isMesh || !o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) return;
+    meshes++;
+    var pos = o.geometry.attributes.position.count;
+    var idx = o.geometry.index ? o.geometry.index.count : 0;
+    var c = faceCountFromGeometry(pos, idx);
+    faces += c.faces; verts += c.verts;
+  });
+  return { faces: faces, verts: verts, meshes: meshes };
+}
+function updateModelStats() {
+  if (!charRoot) return;
+  modelStats = countModelFacesVerts(charRoot);
+  var txt = 'Model Face Count ' + modelStats.faces.toLocaleString() + ' · Vertex Count ' + modelStats.verts.toLocaleString();
+  var el = document.getElementById('model-stats');
+  if (el) el.textContent = txt;
+  var hud = document.getElementById('hud-stats');
+  if (hud) hud.textContent = modelStats.faces.toLocaleString() + ' faces · ' + modelStats.verts.toLocaleString() + ' verts';
+  var rs = document.getElementById('rig-model-stats');
+  if (rs) rs.textContent = txt + ' · ' + modelStats.meshes + ' mesh';
+  updateBBoxHelper();
+}
+function updateBBoxHelper() {
+  if (!charRoot || !scene) return;
+  if (bboxHelper) { scene.remove(bboxHelper); bboxHelper = null; }
+  var box = new THREE.Box3().setFromObject(charRoot);
+  if (box.isEmpty()) return;
+  bboxHelper = new THREE.Box3Helper(box, 0xffd166);
+  var btn = document.getElementById('btn-bbox');
+  bboxHelper.visible = !!(btn && btn.classList.contains('on'));
+  scene.add(bboxHelper);
 }
 
 // ---- Chuẩn hoá FBX thật: cao đúng 1.53m, căn giữa x/z, chân y=0 ----
@@ -1149,6 +1300,11 @@ function renderRigReport(r) {
     return d;
   }
   line('Nguồn: ' + r.label);
+  line('Skeleton: 28 xương HY3D · skin 23 xương · skeleton hiện trong viewport (mặc định HY3D: bật sẵn).');
+  line('Model Face Count ' + (r.faces == null ? '—' : r.faces.toLocaleString()) + ' · Vertex Count ' + r.verts.toLocaleString() + ' · ' + r.meshes + ' mesh');
+  if (r.faces != null && r.faces > 100000) {
+    line('CẢNH BÁO: Face count ' + r.faces.toLocaleString() + ' > 100.000 — HY3D khuyên dưới 100.000 mặt để rig ổn định (riggingTip); vẫn rig tiếp được, vượt 500.000 mới bị chặn.');
+  }
   line('Mesh: ' + r.verts.toLocaleString() + ' verts · ' + r.meshes + ' mesh · cao ' + r.height.toFixed(3) + ' (đơn vị scene) · scale skeleton ×' + r.scaleFactor.toFixed(3) + ' (chuẩn 1.53m)');
   line('Skin: ' + r.bonesUsed + '/23 xương có weight · ' + r.bad + ' đỉnh lệch weights (tổng ≠ 1.0)' + (r.bad === 0 ? ' — đạt' : ' — CẦN KIỂM TRA'));
   var hd = document.createElement('div');
@@ -1167,7 +1323,33 @@ function renderRigReport(r) {
   hd.appendChild(handSpan('phải ', r.handR));
   hd.appendChild(document.createTextNode(r.handR != null && r.handR <= 10 ? ' (đạt, ≤10°)' : ' (CẢNH BÁO >10° — tay sẽ xoắn khi phát clip!)'));
   line('Mẫu HY3D thật: tay trái 3.7° / phải 9.2° — nếu số đo lệch xa, kiểm tra lại hướng xương bàn tay lúc bind.');
+  var pose = checkPose();
+  line('Tư thế A/T-pose (HY3D chỉ hỗ trợ humanoid A/T-pose chuẩn — "Only supports standard A/T-pose humanoid character driving"): tay trái ' + (pose.armL == null ? '?' : pose.armL.toFixed(1) + '° so với ngang') + ' · tay phải ' + (pose.armR == null ? '?' : pose.armR.toFixed(1) + '° so với ngang') + ' · chân trái ' + (pose.legL == null ? '?' : pose.legL.toFixed(1) + '° so với dọc') + ' · chân phải ' + (pose.legR == null ? '?' : pose.legR.toFixed(1) + '° so với dọc') + ' — ' + (pose.ok ? 'ĐẠT (A/T-pose)' : 'CHƯA ĐẠT — model có thể không phải A/T-pose, animation có thể lệch'));
   line('Clip procedural Idle / Run / Punch đã bật trên nhân vật vừa rig — chọn trong ô Clip ở tab Game.');
+}
+
+// Kiểm tra tư thế A/T-pose: tay dang ngang (hướng vai→cẳng tay gần trục X),
+// chân thẳng đứng (hướng đùi gần trục -Y). Trả góc lệch (độ); null nếu
+// không đo được (thiếu xương). Đạt khi mọi góc ≤25°.
+function checkPose() {
+  if (!charRoot) return { armL: null, armR: null, legL: null, legR: null, ok: false };
+  charRoot.updateMatrixWorld(true);
+  function dirDeg(aName, bName, ref) {
+    var a = bones[aName], b = bones[bName];
+    if (!a || !b) return null;
+    var pa = new THREE.Vector3(), pb = new THREE.Vector3();
+    a.getWorldPosition(pa); b.getWorldPosition(pb);
+    var d = pb.sub(pa);
+    if (d.lengthSq() < 1e-12) return null;
+    d.normalize();
+    return angleBetweenDeg([d.x, d.y, d.z], ref);
+  }
+  var armL = dirDeg('LeftShoulder', 'LeftForeArm', [1, 0, 0]);
+  var armR = dirDeg('RightShoulder', 'RightForeArm', [-1, 0, 0]);
+  var legL = dirDeg('LeftUpLeg', 'LeftLeg', [0, -1, 0]);
+  var legR = dirDeg('RightUpLeg', 'RightLeg', [0, -1, 0]);
+  var ok = [armL, armR, legL, legR].every(function (v) { return v != null && v <= 25; });
+  return { armL: armL, armR: armR, legL: legL, legR: legR, ok: ok };
 }
 
 // Auto-Rig: dựng skeleton HY3D theo chiều cao mesh thật, skin theo khoảng cách.
@@ -1198,6 +1380,19 @@ function autoRigFromObject(obj, label) {
   var meshes = [];
   obj.traverse(function (o) { if (o.isMesh && !o.isSkinnedMesh) meshes.push(o); });
   if (!meshes.length) { logMsg('Auto-Rig thất bại: không tìm thấy mesh nào trong nguồn.'); return false; }
+  // Kiểm tra Face Count kiểu HY3D (character_validations): nên <100.000 mặt,
+  // >500.000 mặt thì KHÔNG rig được.
+  var fc = countModelFacesVerts(obj);
+  if (fc.faces > 500000) {
+    var msg500 = 'Model face count exceeds 500,000, bone skinning is not available — model này có ' + fc.faces.toLocaleString() + ' mặt (>500.000) nên HY3D không rig được. Giảm mặt (decimate) rồi thử lại.';
+    logMsg(msg500);
+    var el500 = document.getElementById('rig-report');
+    el500.innerHTML = '';
+    var d500 = document.createElement('div');
+    d500.textContent = 'Nguồn: ' + label + ' · Model Face Count ' + fc.faces.toLocaleString() + ' · Vertex Count ' + fc.verts.toLocaleString() + ' · ' + msg500;
+    el500.appendChild(d500);
+    return false;
+  }
   // Dựng skeleton HY3D theo scale + wrapper chứa mesh + skeleton.
   var built = buildHY3DSkeleton(scaleFactor);
   var rigRoot = new THREE.Group();
@@ -1237,7 +1432,7 @@ function autoRigFromObject(obj, label) {
   var hands = measureHandAngles();
   var stats = { verts: totalVerts, meshes: skinnedList.length, bad: totalBad, bonesUsed: Object.keys(usedSet).length, height: height, scaleFactor: scaleFactor };
   rigState = { rigged: true, stats: stats, handAngles: hands };
-  renderRigReport({ label: label, verts: totalVerts, meshes: skinnedList.length, bad: totalBad, bonesUsed: Object.keys(usedSet).length, height: height, scaleFactor: scaleFactor, handL: hands.left, handR: hands.right });
+  renderRigReport({ label: label, verts: totalVerts, meshes: skinnedList.length, bad: totalBad, bonesUsed: Object.keys(usedSet).length, height: height, scaleFactor: scaleFactor, faces: fc.faces, handL: hands.left, handR: hands.right });
   logMsg('Auto-Rig xong: ' + label + ' · ' + totalVerts.toLocaleString() + ' verts · ' + Object.keys(usedSet).length + '/23 xương có weight · ' + totalBad + ' đỉnh lệch · tay trái ' + (hands.left == null ? '?' : hands.left.toFixed(1) + '°') + ' / phải ' + (hands.right == null ? '?' : hands.right.toFixed(1) + '°') + '.');
   return true;
 }
@@ -1348,7 +1543,135 @@ function exportRigJSON() {
   logMsg('Đã xuất Rig JSON (pixistudio-tencent-rig-1).');
 }
 
-function saveRiggedGLB() {
+// ---- Download — xuất file kiểu HY3D (menu Download: FBX / GLB / OBJ / STL / USDZ) ----
+// Tên file theo tên motion (vd. ChargedPunch.fbx) thay vì tên ngẫu nhiên như HY3D.
+function downloadBaseName() {
+  var m = motionById(selectedMotion);
+  if (m) return m.en.replace(/[^A-Za-z0-9]+/g, '');
+  if (currentClip) return currentClip.replace(/[^A-Za-z0-9]+/g, '');
+  return 'TencentModel';
+}
+function downloadBlob(blob, filename) {
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+}
+// Chạy fn với charRoot về gốc (0,0,0, không xoay) rồi trả lại vị trí cũ —
+// nếu không file xuất ra sẽ lệch theo vị trí nhân vật đang đi trên sàn.
+function withCharAtOrigin(fn) {
+  var oldPos = charRoot.position.clone(), oldRot = charRoot.rotation.y;
+  charRoot.position.set(0, 0, 0);
+  charRoot.rotation.y = 0;
+  charRoot.updateMatrixWorld(true);
+  try { fn(); } finally {
+    charRoot.position.copy(oldPos);
+    charRoot.rotation.y = oldRot;
+    charRoot.updateMatrixWorld(true);
+  }
+}
+
+// FBX: dùng writer đã có của studio (js/exporter/fbx-binary.js — ASCII 7.3,
+// version 7300, skeleton + skin + animation stack). File này phải có trong
+// repo (copy từ repo 3D-Model); nếu thiếu thì báo rõ, không crash.
+function downloadFBX() {
+  if (typeof window.PixiStudio === 'undefined' || !window.PixiStudio.FBXBinary) {
+    logMsg('Chưa xuất được FBX: thiếu js/exporter/fbx-binary.js trên repo này — copy file đó từ repo 3D-Model (js/exporter/fbx-binary.js) sang repo 3DTencent rồi tải lại trang. Tạm dùng GLB / OBJ / STL.');
+    return;
+  }
+  if (!charRoot || !charRoot.children.length) { logMsg('Chưa có nhân vật để xuất FBX.'); return; }
+  var clip = currentClip ? getClip(currentClip) : null;
+  var name = downloadBaseName();
+  try {
+    withCharAtOrigin(function () {
+      var res = window.PixiStudio.FBXBinary.write(charRoot, { version: 7300, ascii: true, animations: clip ? [{ name: name, clip: clip }] : [] });
+      downloadBlob(new Blob([res.bytes], { type: 'application/octet-stream' }), name + '.fbx');
+      logMsg('Đã xuất FBX (ASCII 7.3, version 7300): ' + name + '.fbx — ' + res.report.meshes + ' mesh · ' + res.report.bones + ' xương · ' + res.report.animationStacks + ' animation stack' + (clip ? ' (' + name + ')' : ' (không clip)') + '.');
+    });
+  } catch (e) { logMsg('Lỗi xuất FBX: ' + e.message); }
+}
+// OBJ: chỉ mesh ở tư thế bind, KHÔNG animation (đúng bản chất OBJ).
+function exportOBJ() {
+  if (!charRoot || !charRoot.children.length) { logMsg('Chưa có nhân vật để xuất OBJ.'); return; }
+  var name = downloadBaseName();
+  withCharAtOrigin(function () {
+    var lines = ['# 3D Tencent — OBJ export (mesh-only, bind pose, no animation)'];
+    var vOff = 0, count = 0;
+    charRoot.traverse(function (o) {
+      if (!o.isMesh || !o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) return;
+      var geo = o.geometry, pos = geo.attributes.position;
+      var nm = new THREE.Matrix3().getNormalMatrix(o.matrixWorld);
+      var v = new THREE.Vector3(), nv = new THREE.Vector3();
+      var i, j, t, a, b, c;
+      for (i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        lines.push('v ' + v.x.toFixed(6) + ' ' + v.y.toFixed(6) + ' ' + v.z.toFixed(6));
+      }
+      var hasN = !!geo.attributes.normal;
+      if (hasN) {
+        for (j = 0; j < pos.count; j++) {
+          nv.fromBufferAttribute(geo.attributes.normal, j).applyMatrix3(nm).normalize();
+          lines.push('vn ' + nv.x.toFixed(6) + ' ' + nv.y.toFixed(6) + ' ' + nv.z.toFixed(6));
+        }
+      }
+      var idx = geo.index;
+      var tris = idx ? idx.count / 3 : pos.count / 3;
+      for (t = 0; t < tris; t++) {
+        if (idx) { a = idx.getX(t * 3) + 1 + vOff; b = idx.getX(t * 3 + 1) + 1 + vOff; c = idx.getX(t * 3 + 2) + 1 + vOff; }
+        else { a = t * 3 + 1 + vOff; b = t * 3 + 2 + vOff; c = t * 3 + 3 + vOff; }
+        lines.push(hasN ? 'f ' + a + '//' + a + ' ' + b + '//' + b + ' ' + c + '//' + c : 'f ' + a + ' ' + b + ' ' + c);
+      }
+      vOff += pos.count;
+      count++;
+    });
+    if (!count) { logMsg('Không có mesh để xuất OBJ.'); return; }
+    downloadBlob(new Blob([lines.join('\n')], { type: 'text/plain' }), name + '.obj');
+    logMsg('Đã xuất OBJ: ' + name + '.obj (' + count + ' mesh, tư thế bind, KHÔNG animation).');
+  });
+}
+// STL: ASCII STL, chỉ mesh ở tư thế bind, KHÔNG animation.
+function exportSTL() {
+  if (!charRoot || !charRoot.children.length) { logMsg('Chưa có nhân vật để xuất STL.'); return; }
+  var name = downloadBaseName();
+  withCharAtOrigin(function () {
+    var lines = ['solid ' + name];
+    var count = 0;
+    charRoot.traverse(function (o) {
+      if (!o.isMesh || !o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) return;
+      var geo = o.geometry, pos = geo.attributes.position;
+      var idx = geo.index;
+      var tris = idx ? idx.count / 3 : pos.count / 3;
+      var va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+      var e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), n = new THREE.Vector3();
+      function vert(k, out) {
+        var vi = idx ? idx.getX(k) : k;
+        out.fromBufferAttribute(pos, vi).applyMatrix4(o.matrixWorld);
+      }
+      for (var t = 0; t < tris; t++) {
+        vert(t * 3, va); vert(t * 3 + 1, vb); vert(t * 3 + 2, vc);
+        e1.subVectors(vb, va); e2.subVectors(vc, va);
+        n.crossVectors(e1, e2);
+        if (n.lengthSq() < 1e-12) n.set(0, 1, 0); else n.normalize();
+        lines.push(' facet normal ' + n.x.toFixed(6) + ' ' + n.y.toFixed(6) + ' ' + n.z.toFixed(6));
+        lines.push('  outer loop');
+        [va, vb, vc].forEach(function (p) {
+          lines.push('   vertex ' + p.x.toFixed(6) + ' ' + p.y.toFixed(6) + ' ' + p.z.toFixed(6));
+        });
+        lines.push('  endloop');
+        lines.push(' endfacet');
+      }
+      count++;
+    });
+    lines.push('endsolid ' + name);
+    if (!count) { logMsg('Không có mesh để xuất STL.'); return; }
+    downloadBlob(new Blob([lines.join('\n')], { type: 'text/plain' }), name + '.stl');
+    logMsg('Đã xuất STL: ' + name + '.stl (' + count + ' mesh, tư thế bind, KHÔNG animation).');
+  });
+}
+
+function saveRiggedGLB(opts) {
+  opts = opts || {};
   if (typeof THREE.GLTFExporter === 'undefined') {
     logMsg('GLTFExporter chưa load — cần mạng để tải từ CDN (jsdelivr/unpkg) rồi tải lại trang.');
     return;
@@ -1358,22 +1681,20 @@ function saveRiggedGLB() {
   charRoot.position.set(0, 0, 0);
   charRoot.rotation.y = 0;
   charRoot.updateMatrixWorld(true);
+  var anims = [];
+  if (opts.withClip && currentClip) { var c = getClip(currentClip); if (c) anims.push(c); }
+  var filename = opts.filename || 'tencent_rigged.glb';
   logMsg('Đang xuất GLB đã rig…');
   new THREE.GLTFExporter().parse(charRoot, function (buf) {
-    var blob = new Blob([buf], { type: 'model/gltf-binary' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'tencent_rigged.glb';
-    a.click();
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+    downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), filename);
     charRoot.position.copy(oldPos);
     charRoot.rotation.y = oldRot;
-    logMsg('Đã lưu GLB đã rig (tencent_rigged.glb, ' + buf.byteLength + ' byte).');
+    logMsg('Đã lưu GLB đã rig (' + filename + ', ' + buf.byteLength + ' byte)' + (anims.length ? ' kèm clip ' + currentClip + '.' : '.'));
   }, function (e) {
     charRoot.position.copy(oldPos);
     charRoot.rotation.y = oldRot;
     logMsg('Lỗi xuất GLB: ' + (e && e.message ? e.message : e));
-  }, { binary: true });
+  }, { binary: true, animations: anims });
 }
 
 function refreshExporterButton() {
@@ -1407,32 +1728,119 @@ function renderMotionLibrary() {
   list.innerHTML = '';
   MOTIONS.forEach(function (m) {
     var row = document.createElement('div');
-    row.className = 'motion-row' + (currentClip === motionClipId(m) ? ' on' : '');
-    var srcTxt, srcCls;
-    if (m.kind === 'punch' || m.kind === 'combo') {
-      srcTxt = fbxClips.PunchFBX ? 'FBX thật' : 'procedural';
-      srcCls = fbxClips.PunchFBX ? 'fbx' : 'proc';
-    } else {
-      srcTxt = 'procedural'; srcCls = 'proc';
-    }
-    var meta = m.dur.toFixed(3) + 's' +
-      (m.fps ? ' · ' + m.fps + 'fps · ' + m.keys + ' keys' : ' · procedural') +
-      (m.id === 'Combo' ? ' · = Punch ×3 (6.999s)' : '');
+    var clipId = motionClipId(m);
+    row.className = 'motion-row' + (selectedMotion === m.id ? ' on' : '') + (currentClip === clipId ? ' on' : '');
+    row.dataset.motionId = m.id;
+    var isPunch = m.kind === 'punch' || m.kind === 'combo';
+    var srcTxt = isPunch ? (fbxClips.PunchFBX ? 'FBX thật' : 'procedural') : 'procedural';
+    var srcCls = isPunch && fbxClips.PunchFBX ? 'fbx' : 'proc';
+    var gen = generatedMotions[m.id];
+    var meta = (m.dur ? m.dur.toFixed(3) + 's · 60fps · 141 keys' : 'thời lượng chưa có số đo thật') +
+      ' · ' + m.cn +
+      (m.kind === 'combo' ? ' · = Punch ×3' : '') +
+      (m.kind === 'proc' && m.base !== 'PunchProc' ? ' · preview bằng clip ' + m.base + ' thay thế' : '');
     row.innerHTML =
-      '<span class="motion-name">' + m.name + '</span>' +
+      '<span class="motion-name">' + m.en + '</span>' +
       '<span class="motion-meta">' + meta + '</span>' +
       '<span class="badge ' + (m.loop ? 'loop' : 'once') + '">' + (m.loop ? 'LOOP' : 'ONCE') + '</span>' +
       '<span class="badge ' + srcCls + '">' + srcTxt + '</span>' +
+      '<span class="badge ' + (gen ? 'gen' : 'ungen') + '">' + (gen ? 'Đã generate' : 'Chưa generate') + '</span>' +
       '<button data-motion="' + m.id + '" style="margin-left:auto">Áp dụng</button>';
     list.appendChild(row);
   });
 }
 function motionClipId(m) {
   if (m.kind === 'punch' || m.kind === 'combo') return punchClipId();
-  return m.id;
+  return m.base; // proc: clip procedural theo nhóm (Idle / Run / PunchProc)
+}
+function motionById(id) {
+  var found = null;
+  MOTIONS.forEach(function (x) { if (x.id === id) found = x; });
+  return found;
+}
+function selectMotion(id) {
+  var m = motionById(id);
+  if (!m) return;
+  selectedMotion = id;
+  renderMotionLibrary();
+  logMsg('Đã chọn motion: ' + m.en + ' (' + m.cn + ') — bấm Generate Now để generate (mô phỏng cloud) hoặc Áp dụng để phát procedural ngay.');
+}
+
+function showToast(msg) {
+  var t = document.getElementById('ae-toast');
+  if (t) {
+    t.textContent = msg;
+    t.classList.add('show');
+    if (showToast._tm) clearTimeout(showToast._tm);
+    showToast._tm = setTimeout(function () { t.classList.remove('show'); }, 4000);
+  }
+  logMsg(msg);
+}
+function renderRunningNodes() {
+  var el = document.getElementById('running-nodes');
+  if (!el) return;
+  el.innerHTML = '';
+  if (!runningNodes.length) {
+    var d = document.createElement('div');
+    d.className = 'note';
+    d.textContent = 'Chưa có tác vụ nào đang chạy.';
+    el.appendChild(d);
+    return;
+  }
+  runningNodes.forEach(function (n) {
+    var dd = document.createElement('div');
+    dd.textContent = n.name + ' — ' + n.status;
+    el.appendChild(dd);
+  });
+}
+// Generate Now kiểu HY3D: chọn template → gửi tác vụ cloud (mô phỏng local
+// ~4s: queue → processing → done) → motion chuyển "Đã generate" → tự
+// preview loop trong viewport. Chặn generate trùng; mỗi motion chỉ
+// generate 1 lần cho 1 model; model chưa rig thì chặn như HY3D.
+function generateMotion() {
+  var m = motionById(selectedMotion);
+  if (!m) { showToast('Please select an animation template'); return; }
+  if (genBusy) { showToast('Đang generate "' + m.en + '" — chờ tác vụ hiện tại xong đã (chặn generate trùng).'); return; }
+  if (generatedMotions[m.id]) { showToast('This motion has already been generated, please select another motion'); return; }
+  if (!bones || Object.keys(bones).length < 5) { showToast('This asset has not been boned and skinned, cannot generate action'); return; }
+  genBusy = true;
+  genToken++;
+  var token = genToken;
+  var btn = document.getElementById('btn-generate');
+  if (btn) btn.disabled = true;
+  showToast('Task generated, please check in the asset list on the right');
+  logMsg('Generate Now: "' + m.en + '" (' + m.cn + ') — gửi tác vụ lên cloud (mô phỏng local, ~4s)…');
+  runningNodes = [
+    { name: 'Motion Retarget', status: 'queue' },
+    { name: 'Bone Binding', status: 'queue' },
+    { name: 'Preview', status: 'queue' }
+  ];
+  renderRunningNodes();
+  var stepIdx = 0;
+  function nextStep() {
+    if (token !== genToken) return; // model đổi / generate khác đã thay thế
+    if (stepIdx > 0) runningNodes[stepIdx - 1].status = 'done ✓';
+    if (stepIdx >= runningNodes.length) {
+      generatedMotions[m.id] = true;
+      genBusy = false;
+      if (btn) btn.disabled = false;
+      renderRunningNodes();
+      renderMotionLibrary();
+      logMsg('Generate xong: "' + m.en + '" — đã generate, tự preview loop trong viewport.');
+      applyMotion(m.id);
+      return;
+    }
+    runningNodes[stepIdx].status = 'processing…';
+    renderRunningNodes();
+    stepIdx++;
+    setTimeout(nextStep, 1300);
+  }
+  setTimeout(nextStep, 600);
 }
 
 function applyMotion(id) {
+  var m = motionById(id);
+  if (!m) { logMsg('Không có motion: ' + id); return; }
   var compat = checkRetargetCompat();
   var compatEl = document.getElementById('anim-compat');
   if (compat.pct < 80) {
@@ -1444,8 +1852,11 @@ function applyMotion(id) {
   }
   if (compatEl) compatEl.textContent = 'Tương thích retarget: ' + compat.matched + '/' + compat.total +
     ' xương khớp tên (' + compat.pct.toFixed(0) + '% ≥ 80%) — áp dụng được.';
-  if (id === 'Combo') { playComboPunch(); renderMotionLibrary(); return; }
-  var clipId = (id === 'Punch') ? punchClipId() : id;
+  if (m.kind === 'combo') { playComboPunch(); renderMotionLibrary(); return; }
+  var clipId = motionClipId(m);
+  if (m.id !== 'ChargedPunch') {
+    logMsg('Motion "' + m.en + '" (' + m.cn + ') chưa có clip thật — đang phát clip procedural "' + clipId + '" thay thế. Chỉ Charged Punch có dữ liệu clip thật (2.333s, 60fps, 141 keys).');
+  }
   playClip(clipId, { force: true });
   renderMotionLibrary();
 }
@@ -1563,9 +1974,16 @@ function bindAnimUI() {
   document.getElementById('tab-animation').addEventListener('click', function () { switchTab('anim'); });
   document.getElementById('motion-list').addEventListener('click', function (e) {
     var btn = e.target && e.target.closest ? e.target.closest('[data-motion]') : null;
-    if (btn) applyMotion(btn.dataset.motion);
+    if (btn) { applyMotion(btn.dataset.motion); return; }
+    var row = e.target && e.target.closest ? e.target.closest('.motion-row') : null;
+    if (row && row.dataset.motionId) selectMotion(row.dataset.motionId);
   });
+  document.getElementById('btn-generate').addEventListener('click', generateMotion);
   document.getElementById('btn-export-clip').addEventListener('click', exportClipJSON);
+  document.getElementById('btn-dl-fbx').addEventListener('click', downloadFBX);
+  document.getElementById('btn-dl-glb').addEventListener('click', function () { saveRiggedGLB({ filename: downloadBaseName() + '.glb', withClip: true }); });
+  document.getElementById('btn-dl-obj').addEventListener('click', exportOBJ);
+  document.getElementById('btn-dl-stl').addEventListener('click', exportSTL);
   renderRetargetTable();
   renderPunchBones();
   renderMotionLibrary();
@@ -1580,7 +1998,15 @@ function switchTab(which) {
   document.getElementById('tab-rigstudio').classList.toggle('on', isRig);
   document.getElementById('tab-animation').classList.toggle('on', isAnim);
   document.getElementById('tab-game').classList.toggle('on', !isRig && !isAnim);
-  if (isRig) refreshExporterButton();
+  if (isRig) {
+    refreshExporterButton();
+    // HY3D bước rig: defaultShowSkeleton = true — vào tab Rig là skeleton hiện sẵn.
+    var sk = document.getElementById('btn-skeleton');
+    if (sk && !sk.classList.contains('on')) { sk.classList.add('on'); if (skeletonHelper) skeletonHelper.visible = true; }
+    var rs = document.getElementById('rig-show-skeleton');
+    if (rs) rs.checked = true;
+    updateModelStats();
+  }
   if (isAnim) { renderMotionLibrary(); updateAnimFrame(); }
 }
 
@@ -1626,7 +2052,45 @@ function bindRigUI() {
   });
   document.getElementById('btn-autorig').addEventListener('click', autoRigHY3D);
   document.getElementById('btn-export-rig').addEventListener('click', exportRigJSON);
-  document.getElementById('btn-save-glb').addEventListener('click', saveRiggedGLB);
+  document.getElementById('btn-save-glb').addEventListener('click', function () { saveRiggedGLB(); });
+  document.getElementById('rig-show-skeleton').addEventListener('change', function () {
+    var on = this.checked;
+    var sk = document.getElementById('btn-skeleton');
+    if (sk) sk.classList.toggle('on', on);
+    if (skeletonHelper) skeletonHelper.visible = on;
+  });
+}
+
+// ---- Thanh công cụ viewport kiểu HY3D: Geometry / Wireframe / Texture / White ----
+// White (white-mold) là chế độ mặc định ở bước Rig của HY3D.
+function setViewMode(mode) {
+  var sel = document.getElementById('view-mode');
+  if (sel) sel.value = mode;
+  var wireBtn = document.getElementById('btn-wire');
+  if (origMaterials) {
+    origMaterials.forEach(function (mat, mesh) { mesh.material = mat; });
+    origMaterials = null;
+  }
+  wireOn = false;
+  if (wireBtn) wireBtn.classList.remove('on');
+  scene.traverse(function (o) { if (o.isMesh && o.material) o.material.wireframe = false; });
+  if (mode === 'wireframe') {
+    wireOn = true;
+    if (wireBtn) wireBtn.classList.add('on');
+    scene.traverse(function (o) { if (o.isMesh && o.material) o.material.wireframe = true; });
+    logMsg('Chế độ hiển thị: Wireframe & Geometry.');
+  } else if (mode === 'white') {
+    origMaterials = new Map();
+    var white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
+    charRoot.traverse(function (o) {
+      if (o.isMesh && o.material) { origMaterials.set(o, o.material); o.material = white; }
+    });
+    logMsg('Chế độ hiển thị: White (white-mold) — như mặc định bước Rig HY3D.');
+  } else if (mode === 'texture') {
+    logMsg('Chế độ hiển thị: Texture (material gốc — mannequin không có texture nên giống Geometry).');
+  } else {
+    logMsg('Chế độ hiển thị: Geometry.');
+  }
 }
 
 // ---- UI binding ----
@@ -1649,6 +2113,20 @@ function bindUI() {
     scene.traverse(function (o) {
       if (o.isMesh && o.material) o.material.wireframe = wireOn;
     });
+    var vm = document.getElementById('view-mode');
+    if (vm) vm.value = wireOn ? 'wireframe' : 'geometry';
+  });
+  document.getElementById('view-mode').addEventListener('change', function () { setViewMode(this.value); });
+  document.getElementById('btn-bbox').addEventListener('click', function () {
+    this.classList.toggle('on');
+    if (bboxHelper) bboxHelper.visible = this.classList.contains('on');
+    else updateBBoxHelper();
+    logMsg('Bounding Box: ' + (this.classList.contains('on') ? 'hiện' : 'ẩn') + '.');
+  });
+  document.getElementById('btn-grid').addEventListener('click', function () {
+    this.classList.toggle('on');
+    if (gridHelper) gridHelper.visible = this.classList.contains('on');
+    logMsg('Ground Grid: ' + (this.classList.contains('on') ? 'hiện' : 'ẩn') + '.');
   });
   document.getElementById('btn-auto').addEventListener('click', function () {
     this.classList.toggle('on'); autoRotate = this.classList.contains('on');
